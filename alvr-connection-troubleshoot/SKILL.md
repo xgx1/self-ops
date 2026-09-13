@@ -5,7 +5,7 @@ description: ALVR 无法发现/连接 VR 头显（PICO/Quest）时的完整排�
 
 # ALVR 连接故障排查（Windows 服务端 + PICO/Quest 客户端）
 
-适用：ALVR 无法发现/连接头显、握手失败、SteamVR 起不来。本机安装路径 `C:\Users\Admin\Apps\alvr_launcher_windows\installations\<版本>\`。
+适用：ALVR 无法发现/连接头显、握手失败、SteamVR 起不来。本机安装路径 `~\Apps\alvr_launcher_windows\installations\<版本>\`。
 
 ## 连接架构（先懂再查）
 

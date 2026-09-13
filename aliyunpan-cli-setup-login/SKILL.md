@@ -5,7 +5,7 @@ description: 安装/登录 tickstep/aliyunpan（阿里云盘 CLI）：scoop 无�
 
 # aliyunpan (阿里云盘 CLI) 安装与登录
 
-tickstep/aliyunpan —— 阿里云盘官方无 CLI，社区最活跃客户端。本机装于 `C:\Users\Admin\Apps\aliyunpan\`（v0.4.0，用户 PATH 已加）。
+tickstep/aliyunpan —— 阿里云盘官方无 CLI，社区最活跃客户端。本机装于 `~\Apps\aliyunpan\`（v0.4.0，用户 PATH 已加）。
 
 ## 安装（scoop 无此包）
 

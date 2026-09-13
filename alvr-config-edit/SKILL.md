@@ -6,7 +6,7 @@ description: 修改本机 ALVR（alvr_launcher 安装版）串流配置：sessio
 # ALVR session.json 直接编辑流程
 
 ## 路径
-- 安装目录：`C:\Users\Admin\Apps\alvr_launcher_windows\installations\<版本号>\`（launcher 版，版本目录会变，用 `Get-Process *ALVR* | Select Path` 或 ls installations 定位）
+- 安装目录：`~\Apps\alvr_launcher_windows\installations\<版本号>\`（launcher 版，版本目录会变，用 `Get-Process *ALVR* | Select Path` 或 ls installations 定位）
 - 配置：同目录 `session.json`
 - 主程序：`ALVR Dashboard.exe`
 

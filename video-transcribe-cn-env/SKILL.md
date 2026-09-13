@@ -57,7 +57,7 @@ faster-whisper 1.2.x 需要：config.json + model.bin + tokenizer.json + preproc
 ### 1. 装 Python + venv
 ```bash
 scoop install python
-powershell.exe -NoProfile -Command "C:\Users\Admin\scoop\shims\python3.exe -m venv .venv"
+powershell.exe -NoProfile -Command "~\scoop\shims\python3.exe -m venv .venv"
 powershell.exe -NoProfile -Command ".\.venv\Scripts\python.exe -m pip install --quiet faster-whisper"
 ```
 
@@ -123,4 +123,4 @@ segments, info = model.transcribe(wav, language="zh", vad_filter=True)
 输出格式：`[时间戳] SPEAKER_NN: 对话内容`；LLM 精简时保留说话人标签，规则 6 禁止合并不同人的话。
 
 ## 备注
-- 微信视频文件位于 `C:\Users\Admin\scoop\persist\wechat\xwechat_files\wxid_xxx\msg\video\YYYY-MM\*.mp4`
+- 微信视频文件位于 `~\scoop\persist\wechat\xwechat_files\wxid_xxx\msg\video\YYYY-MM\*.mp4`
