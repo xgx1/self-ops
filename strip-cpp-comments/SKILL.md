@@ -5,12 +5,23 @@ description: "批量移除 C++/C 源码中所有注释（// 与 /* */）的安�
 
 # 移除 C++ 源码所有注释
 
+> **平台约定**：本机主力环境是 Linux（Arch）——命令以 bash 为先、可直接执行；Windows 专属步骤一律收进「Windows（PowerShell）」小节，不在 Linux 段落里混用。
+
 ## 何时用
-用户要求删除/移除/清空 C/C++ 项目中的全部注释（含 bat 的 `rem`）。
+用户要求删除/移除/清空 C/C++ 项目中的全部注释（含 Windows bat 的 `rem`；Linux 侧同类的 `.sh` 注释见第 4 步）。
 
 ## 步骤
 
-1. **备份**：`cp -r <src_dir> <src_dir>_备份_含注释`（无 git 时必须，删除不可逆）。
+1. **备份**：无 git 时必须先备份，删除不可逆。
+
+   ### Linux（bash）
+   ```bash
+   cp -r <src_dir> <src_dir>_备份_含注释
+   ```
+   ### Windows（PowerShell）
+   ```powershell
+   Copy-Item -Recurse <src_dir> <src_dir>_备份_含注释
+   ```
 
 2. **词法剥离器**（Python，逐字符状态机）：
    - 状态：普通 / 字符串 `"` / 字符字面量 `'`
@@ -24,13 +35,29 @@ description: "批量移除 C++/C 源码中所有注释（// 与 /* */）的安�
    - 行尾注释 → 保留代码，删 `//` 到行尾，rstrip 行尾空白
    - 删除后压缩连续空行（2+ → 1），去文件首部空行，保证尾部单换行
 
-4. **bat 文件**：`re.match(r"^\s*rem\b", ln)` 删行（rem 是 bat 注释）。
+4. **脚本文件注释**：
+   - Windows bat：`re.match(r"^\s*rem\b", ln)` 删行（rem 是 bat 注释）
+   - Linux shell：同类处理 `^\s*#` 行；**但 `#!` shebang 必须保留**（首行 `#!/usr/bin/env bash` 不是注释），且 `#` 出现在参数/字符串里（如 `${var#prefix}`）不能删——不确定就别碰 `.sh`，本技能的主目标是 C/C++
 
 5. **验证（缺一不可）**：
    - 无残留：把字符串/字符字面量掩码为占位后，剩余文本逐行查 `//`
    - 零破坏：**剥离器重放备份文件 → 与新文件字节级对比**（这是唯一可靠对比；用正则提取字符串对比新旧会错位误报——注释里的字符串示例如 `// cmd /k "cd /d 目录"` 会被计入旧文件）
-   - 编译：`cmd /c build.bat` 看 `EXIT_CODE=0`（项目有 build 脚本时）
-   - 运行时：跑一次 exe 确认中文输出完好
+   - 编译：项目有 build 脚本时，构建到退出码 0（命令见下）
+   - 运行时：跑一次产物确认中文输出完好
+
+### 编译与运行时验证（第 5 步的命令）
+
+#### Linux（bash）
+```bash
+make && echo "EXIT_CODE=$?"          # 或：bash build.sh; echo "EXIT_CODE=$?"
+./<产物>                              # 跑一次确认中文输出完好
+```
+
+#### Windows（PowerShell）
+```powershell
+cmd /c build.bat                     # 看 EXIT_CODE=0
+.\<产物>.exe                         # 跑一次 exe 确认中文输出完好
+```
 
 ## 坑
 - 字符串内 `//`（如说明文本、路径）绝不能删
