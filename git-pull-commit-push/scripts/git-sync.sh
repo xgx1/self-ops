@@ -114,7 +114,7 @@ if [ "$INCLUDE_UNTRACKED" -eq 1 ] && [ -n "$UNTRACKED_LIST" ]; then
   done <<< "$UNTRACKED_LIST"
   [ -n "$UNTRACKED_FAILED" ] && echo "⚠️  以下未跟踪文件加入暂存区失败（未入库）：$UNTRACKED_FAILED" >&2
 fi
-UNTRACKED_FAILED_JSON="$(printf '%s' "$UNTRACKED_FAILED" | jesc)"
+UNTRACKED_FAILED_JSON="$(jesc "$UNTRACKED_FAILED")"
 
 STAGED="$(git diff --cached --name-only)"
 STAGED_N=$(printf '%s\n' "$STAGED" | grep -c . || true)
