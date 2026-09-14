@@ -99,14 +99,22 @@ done < <(git submodule status --recursive 2>/dev/null)
   ",\"submodules\":\"$(jesc "$SUBMOD_BAD")\""
 
 # ---------- 4. 工作区：只暂存已跟踪文件的修改；未跟踪文件默认不动 ----------
-UNTRACKED_LIST="$(git ls-files --others --exclude-standard)"
+# core.quotePath=false：默认情况下 git 会把含非 ASCII 的路径输出成 C 风格转义（"Docs/\345..."），
+# 拿这种字符串去 git add 必然匹配不到文件（实测：中文名文件被静默漏掉，脚本还报成功）。
+UNTRACKED_LIST="$(git -c core.quotePath=false ls-files --others --exclude-standard)"
 UNTRACKED_JSON="$(printf '%s\n' "$UNTRACKED_LIST" | arr_json)"
 UNTRACKED_N=$(printf '%s\n' "$UNTRACKED_LIST" | grep -c . || true)
 
 git add -u
+UNTRACKED_FAILED=""
 if [ "$INCLUDE_UNTRACKED" -eq 1 ] && [ -n "$UNTRACKED_LIST" ]; then
-  while IFS= read -r f; do [ -n "$f" ] && git add -- "$f"; done <<< "$UNTRACKED_LIST"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    git add -- "$f" 2>/dev/null || UNTRACKED_FAILED="$UNTRACKED_FAILED$f；"
+  done <<< "$UNTRACKED_LIST"
+  [ -n "$UNTRACKED_FAILED" ] && echo "⚠️  以下未跟踪文件加入暂存区失败（未入库）：$UNTRACKED_FAILED" >&2
 fi
+UNTRACKED_FAILED_JSON="$(printf '%s' "$UNTRACKED_FAILED" | jesc)"
 
 STAGED="$(git diff --cached --name-only)"
 STAGED_N=$(printf '%s\n' "$STAGED" | grep -c . || true)
@@ -185,6 +193,7 @@ fi
 FINAL_SHA="$(git rev-parse HEAD)"; FINAL_REMOTE="$(git rev-parse "$UPSTREAM" 2>/dev/null || echo '')"
 echo "✅ 同步完成：分支 $BRANCH  $FINAL_SHA"
 echo "   整合方式=$INTEGRATED  推送=$PUSHED  未跟踪文件（未入库）=$UNTRACKED_N"
+[ -n "$UNTRACKED_FAILED" ] && echo "   ⚠️ 有未跟踪文件加入暂存区失败，见上面告警：$UNTRACKED_FAILED" >&2
 emit done ok "同步完成" \
-  ",\"repo\":\"$(jesc "$REPO")\",\"branch\":\"$(jesc "$BRANCH")\",\"sha\":\"$(jesc "$FINAL_SHA")\",\"remote_sha\":\"$(jesc "$FINAL_REMOTE")\",\"integrated\":\"$INTEGRATED\",\"pushed\":\"$PUSHED\",\"committed\":$COMMITTED,\"untracked\":$UNTRACKED_JSON"
+  ",\"repo\":\"$(jesc "$REPO")\",\"branch\":\"$(jesc "$BRANCH")\",\"sha\":\"$(jesc "$FINAL_SHA")\",\"remote_sha\":\"$(jesc "$FINAL_REMOTE")\",\"integrated\":\"$INTEGRATED\",\"pushed\":\"$PUSHED\",\"committed\":$COMMITTED,\"untracked\":$UNTRACKED_JSON,\"untracked_add_failed\":\"$UNTRACKED_FAILED_JSON\""
 exit 0

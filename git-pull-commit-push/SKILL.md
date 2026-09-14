@@ -68,6 +68,7 @@ bash scripts/git-sync.sh -C /path/to/repo -m "..." --keep-conflict
 | 冲突时"两边都留"拼成新内容再推 | 这不是合并是发明语义，远端已收下错误内容，别人基于它继续开发 |
 | 信 `git status` 的"与上游一致" | 本地引用过期时的谎报；不 fetch 就下结论会漏掉远端提交 |
 | 冲突后把工作区丢那儿 | 半完成 rebase 会让后续所有 git 操作踩雷（脚本默认 abort 就是为了避免这个） |
+| 拿 `git ls-files --others` 的输出直接 `git add` | git 默认把含非 ASCII 的路径输出成 C 风格转义（`"Docs/\345\212\237..."`），add 匹配不到 → 文件被**静默漏掉**、脚本照报成功（脚本已修：加 `-c core.quotePath=false`，失败项记进 `untracked_add_failed`；自测 S10 守着这条） |
 | `push --force` 解决被拒 | 覆盖他人已推送的历史，不可恢复 |
 | 子模块改了只推父仓库 | 父仓库指针指向子模块里不存在的提交，别人拉下来是坏的 |
 

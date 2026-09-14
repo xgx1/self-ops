@@ -126,6 +126,19 @@ json_ok S9 "$out"
 check "S9 退出码 5（子模块未推送）" 5 "$rc"
 check "S9 原因 submodule_unpushed" "submodule_unpushed" "$(printf '%s' "$out" | sed -n 's/.*"reason":"\([a-z_]*\)".*/\1/p')"
 
+# ---------- S10 --include-untracked 必须能收进非 ASCII 文件名的文件 ----------
+# （实测回归：git 默认把含非 ASCII 的路径输出成 C 风格转义 "Docs/\345..."，
+#   拿它去 git add 匹配不到，文件被静默漏掉而脚本仍报成功）
+new_pair s10; work s10
+printf 'line1\ntracked-change\nline3\n' > src/app.txt
+printf '内容\n' > "闸门控制配置手册.md"
+out=$(bash "$SCRIPT" -C "$LAB/s10/work" -m "docs: 纳入中文名文件" --include-untracked 2>&1); rc=$?
+json_ok S10 "$out"
+check "S10 退出码 0" 0 "$rc"
+check "S10 中文名文件已入库" "闸门控制配置手册.md" "$(git -c core.quotePath=false ls-files '闸门控制配置手册.md')"
+check "S10 已推送到远端" "yes" "$([ "$(remote_sha s10)" = "$(work s10; git rev-parse HEAD)" ] && echo yes || echo no)"
+check "S10 无 add 失败记录" "" "$(printf '%s' "$out" | sed -n 's/.*"untracked_add_failed":"\([^"]*\)".*/\1/p')"
+
 # ---------- 汇总 ----------
 echo
 echo "===================="
