@@ -75,9 +75,37 @@ git push local master        # 再推本地
 
 ## 4. 阿里云 Codeup push 断连处理
 
-本节命令两平台一致：
+### 4.1 首选判据：代理吞掉请求体（2026-09 实证根因）
 
-refs push 报 `send-pack: unexpected disconnect` 时：先 `git lfs push aliyun master`（LFS 对象独立传），再重试 refs push（实测第 2 次成功）。大 push HTTP 408：`git config http.postBuffer 536870912` + 重试循环。
+**症状**：push 卡在 `写入对象中: NN%` 长时间不动，或干脆停在 0%；`git pack-objects` 阻塞在 `anon_pipe_write`，`git-remote-https` 空闲（`poll_schedule_timeout`），socket 的 Recv-Q 有数据但**上行字节数几乎不涨**；拖久了报 `send-pack: unexpected disconnect while reading sideband packet` / `远端意外挂断了`。
+
+**误判排除**（这四条都已实测证伪，别再往这儿查）：不是 HTTP/2 与分块传输，不是 `postBuffer` 太小（改成 128 MB 后请求头正常发出 `Content-Length: 17615463`，包体照样不动），不是服务端拒收（裸 `curl` POST 到 receive-pack 地址 0.13 s 返回 401），不是仓库太大（同一提交直连即成）。
+
+**根因**：本机 `http_proxy`/`https_proxy`/`all_proxy` 指向 clash（`127.0.0.1:7897`）时，clash 会**吞掉大体积 POST 请求体**。小请求全部正常——`ls-remote`、ref advertisement、甚至连 LFS 那 76 个对象（2.0 MB）都报 `100% … done`——只有 17.8 MB 的 receive-pack 包体发不出去。**容易被 LFS 成功误导成"网络没问题"**。
+
+**判据**（一条命令验完，Linux）：
+
+```bash
+b1=$(ss -tin | awk '/<远端IP>/{f=1} f&&/bytes_sent/{for(i=1;i<=NF;i++) if($i~/bytes_sent:/){gsub("bytes_sent:","",$i); s+=$i}} /^$/{f=0} END{print s+0}')
+sleep 8
+b2=$(ss -tin | awk '/<远端IP>/{f=1} f&&/bytes_sent/{for(i=1;i<=NF;i++) if($i~/bytes_sent:/){gsub("bytes_sent:","",$i); s+=$i}} /^$/{f=0} END{print s+0}')
+echo "$(( (b2-b1)/8/1024 )) KB/s"   # 0 或个位数 = 包体没进 socket
+```
+
+**解法**：把 proxy 环境变量全部摘掉走直连（clash 可以继续开着，只是别让 git 走它）：
+
+```bash
+env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NODE_USE_ENV_PROXY \
+  git -c http.lowSpeedLimit=20000 -c http.lowSpeedTime=60 push --progress origin HEAD:master
+```
+
+实测：直连后立刻稳定在 **117 KiB/s**，16.80 MiB 包体送达，`59057bc..c8f7306  HEAD -> master`，exit 0。18 MB 量级约 2.5 分钟，**属正常速度，耐心等完**。`--progress` 必须加，否则非 TTY 下看不到进度会误以为又卡死。
+
+**顺带一提**：`-c http.version=HTTP/1.0` 这条路走不通——git-lfs 的 pre-push 钩子会直接报 `Unknown HTTP version "HTTP/1.0"` 并让整条 push 失败，别试。
+
+### 4.2 次选：纯协议层重试
+
+若直连后仍报 `send-pack: unexpected disconnect`（§4.1 判据显示字节在动却中途断），再按老办法：先 `git lfs push aliyun master`（LFS 对象独立传），再重试 refs push（实测第 2 次成功）。大 push HTTP 408：`git config http.postBuffer 536870912` + 重试循环。
 
 ## 5. 合并独立历史仓库（网盘快照 → 正式仓库）
 
