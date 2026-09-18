@@ -22,6 +22,9 @@ description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 
 - LLM 现状：provider `deepseek` → `http://127.0.0.1:8787/v1`（本机 headroom-deepseek 代理，
   systemd 用户服务、开机自启）→ `https://api.deepseek.com`；密钥用 `~/.dsh/.credentials.yaml`
   里的 `DEEPSEEK_API_KEY`（**客户端带 key，headroom 只转发**，所以 provider 里必须填 key）。
+  **只有一个 provider，不要留第二份**：旧的 SCNet 链路（`scnet` → 127.0.0.1:8789 的
+  headroom-scnet 实例、模型 `DeepSeek-V4-Flash-0731`）2026-09-18 已彻底删除——套餐额度耗尽
+  （429）、systemd 单元、provider 条目、含旧密钥的 config 备份全部清掉，不留死配置。
 - 场景：`__raw__`（纯 ASR，不走 LLM）/ `polish`（AI 整理，听写用）/ `__command__`（口令改写选中文本，
   **无选中时实测原样输出**，可安全当听写用）。当前激活场景看 `vinput scene list` 的 `[*]`。
 - 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":"asr|user","text":...,"timestamp":...}`
@@ -95,7 +98,7 @@ curl -sS --noproxy '*' -H "Authorization: Bearer $KEY" -H 'Content-Type: applica
 cd ~/.config/vinput && cp -a config.json "config.json.bak.$(date +%Y%m%d-%H%M%S)"   # 先备份
 KEY=$(grep -m1 'DEEPSEEK_API_KEY' ~/.dsh/.credentials.yaml | sed -E 's/^[^:]+:\s*//')
 vinput llm add deepseek -u http://127.0.0.1:8787/v1 -k "$KEY" \
-  -e '{"thinking":{"type":"enabled"},"reasoning_effort":"high"}'      # -e = 合并进每次请求体
+  -e '{"thinking":{"type":"enabled"},"reasoning_effort":"low"}'       # -e = 合并进每次请求体；low = 当前档位
 vinput llm rm <旧provider>                                            # 旧的清掉，别留死配置
 vinput scene edit polish     -p deepseek -m deepseek-flash --timeout 120000
 vinput scene edit __command__ -p deepseek -m deepseek-flash --timeout 120000
@@ -109,8 +112,8 @@ systemctl --user restart vinput-daemon && vinput daemon status
 
 | 模型 + 档位 | 耗时 | 备注 |
 |---|---|---|
-| flash + thinking + `high` | 3.8 / 8.0 s | **推荐**（重复内容还会命中 headroom 前缀缓存，实测 10ms 级） |
-| flash + thinking + `low` | 3.5 / 7.4 s | 与 high 差别不大 |
+| flash + thinking + `low` | 1.1 s（单次实测）/ 3.5 / 7.4 s | **当前配置**（2026-09-18 用户选定：速度优先） |
+| flash + thinking + `high` | 3.8 / 8.0 s | 想更细致时改这档；重复内容命中 headroom 前缀缓存时 10ms 级 |
 | flash + thinking + `max` | 5.6 / 22.8 s | 长尾明显（reasoning 4.6k tokens） |
 | v4-pro + thinking + `high` | 23 / 23 / 25 s | 语音场景太慢，别用 |
 
