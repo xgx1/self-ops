@@ -27,8 +27,33 @@ description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 
   （429）、systemd 单元、provider 条目、含旧密钥的 config 备份全部清掉，不留死配置。
 - 场景：`__raw__`（纯 ASR，不走 LLM）/ `polish`（AI 整理，听写用）/ `__command__`（口令改写选中文本，
   **无选中时实测原样输出**，可安全当听写用）。当前激活场景看 `vinput scene list` 的 `[*]`。
-- 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":"asr|user","text":...,"timestamp":...}`
-  —— `asr` 是原始识别，`user` 是最终提交（含 LLM 结果）。
+- 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":"asr|llm|user","text":...,"timestamp":...}`
+  —— **`asr`** 是原始识别（进候选或被预览时才记），**`llm`** 是 LLM 后处理结果
+  （2026-09-18 统计：user 3458 / asr 238 / llm 30），**`user`** 是最终提交的文本。
+  本机已关掉 raw 候选/预览（见下节），所以健康的一次听写只留 `llm`（+ 有焦点窗口时 `user`），不再出现 `asr`。
+
+## 候选与"要不要手动挑"（raw_cand / raw_prev，2026-09-18 用户明确要求后改定）
+
+语义（源码 `src/daemon/postprocess/post_processor.cpp` + `src/addon/dbus/vinput_dbus.cpp:892`
++ man `vinput-config.5` 三处一致）：
+
+- 候选数组 = 原始识别文本 + LLM 改写结果，**保序去重**；
+- `raw_cand=true`（默认）时原始文本**永远排第 1、也是默认焦点**；
+- **去重后只剩 1 个候选 → 直接上屏，不弹菜单；>1 个 → 弹菜单让你挑**（判定就是
+  `payload.candidates.size() > 1`）。
+
+本机设置（`polish` 与 `__command__` 都是）：`count=1` + `--raw-cand false --raw-prev false`
+→ 候选恒为 1（只有 LLM 结果）→ **说完直接上屏，全程零手动选择**；LLM 失败时 daemon 回退原始
+文本，也仍是单候选、自动上屏（不会丢字，只是没整理）。
+`raw_prev=false` 顺带消掉等待期的原句浮层，以及"回车提前上屏原文"这个会误提交未整理文本的口子。
+
+```bash
+vinput scene edit polish      --raw-cand false --raw-prev false
+vinput scene edit __command__ --raw-cand false --raw-prev false
+systemctl --user restart vinput-daemon
+```
+
+改回"想手动挑"就 `--raw-cand true`（原始文本会重新变成第 1 项默认焦点）。
 
 ## 为什么 LLM 端点必须是 127.0.0.1
 
@@ -130,9 +155,11 @@ vinput recording start; sleep 0.7; paplay "$D/1.wav"; sleep 1.5; vinput recordin
 tail -n +$((before+1)) "$H"            # 新条目出现即链路通
 ```
 
-判定：出现 `{"source":"asr",...}` = ASR 通；出现 `{"source":"user",...}` = 最终提交（需要有焦点
-窗口时才写）；daemon 日志 `streaming queued final result` = 流水线跑完。房间回放的识别结果会有
-错字（`这是第第二种叫呃与 always always` 这种），**这是正常现象，不是故障**——验证看的是链路不是准确率。
+判定：出现 `{"source":"llm",...}` = ASR + LLM 整条通（本机已关 raw 候选/预览，所以不再出现 `asr`；
+若哪天又看到 `asr` 条目，说明 `raw_cand`/`raw_prev` 被改回 true 了）；出现 `{"source":"user",...}`
+= 已提交（需要有焦点窗口时才写）；daemon 日志 `streaming queued final result` = 流水线跑完。
+房间回放的识别结果会有错字（`这是第第二种叫呃与 always always` 这种），**这是正常现象，不是故障**
+——验证看的是链路不是准确率。
 LLM 段可脱机复现：用 `jq` 把场景 prompt 里的 `{{asr}}` / `{{selected}}` 替换掉，直接 curl 8787。
 
 ## 坑位清单（实测）
@@ -140,7 +167,8 @@ LLM 段可脱机复现：用 `jq` 把场景 prompt 里的 `{{asr}}` / `{{selecte
 - `vinput device list` **不含 monitor**；`vinput config set /global/capture_device` 填了它不认的名字
   会**静默回落到默认设备**（表现为"抓到的全是静音"）。设备名抄 `vinput device list` 里的原文。
 - `vinput --help` 有 `recording start/stop`，可无 GUI 驱动整条链路（`stop -s <场景>` 可临时指定场景）。
-- 历史文件 `source:asr` vs `source:user` 是判断"LLM 段是否生效"的最快证据。
+- 历史文件的 `source` 是判断"LLM 段是否生效"的最快证据：`llm`=LLM 结果、`asr`=原文进过候选/预览、
+  `user`=最终提交（详见上面「候选与要不要手动挑」节）。
 - vinput 包来自 **archlinuxcn**（`fcitx5-vinput`、`sherpa-onnx`），protobuf/onnxruntime 来自
   **extra**；跨仓库升级最容易出 SONAME 断裂。
 - 有 `.bak` 备份习惯：`~/.config/vinput/config.json.bak.<时间戳>`；出问题先回滚再定位。
