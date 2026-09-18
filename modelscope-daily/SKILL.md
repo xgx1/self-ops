@@ -55,6 +55,35 @@ modelscope service status | run-now | uninstall
 - 填「合集名称」是 React 受控组件，必须用原生 setter + `dispatchEvent(new Event('input', {bubbles:true}))`，直接赋 `value` 不生效。
 - 首次运行会自动建一个**非公开**的合集，默认名 `我的收藏`（可用 `MODELSCOPE_COLLECTION_NAME` 覆盖）。这是站点自己的空状态引导，不是我们造的私有格式。
 
+## 技能中心：把自己写的技能发布上去
+
+```bash
+modelscope skill list                      # 列可上传技能与排除原因
+modelscope skill publish --dry-run         # 预演，不产生副作用
+modelscope skill publish                   # 发布/更新（内容哈希没变就跳过）
+        --only a,b   只发布指定技能
+        --force      内容没变也重传
+        --limit N    本次最多处理 N 个
+modelscope skill whitelist [list|init|add|remove|clear]   # 权威名单
+modelscope skill blacklist [list|add|remove|clear]
+modelscope skill service install --at 09:30               # 每日定时发布
+```
+
+发布链路（官方两步，实测）：
+
+1. `POST /openapi/v1/files/upload`，multipart 带 `file=@<技能>.zip` 与 `type=skill` → 拿 `data.id` 当 `skill_file`
+2. 技能不存在 → `POST /openapi/v1/skills`（`owner`/`skill_name`/`display_name`/`description`/`skill_file`/`category`/`license`/`tags`/`source_url`）；已存在 → `PATCH /openapi/v1/skills/{owner}/{skill_name}/settings`
+
+**认证直接用已登录浏览器 profile 的 cookie，不需要 API token**（`modelscope login` 之后就能发）。
+
+坑：
+
+- `category` 的**实际取值比官方文档短**：只有 `skill-management`、`developer-tools`、`marketing-seo`、`frontend-development`、`ai-media`、`code-quality-testing`、`mobile-development`、`cloud-devops`、`other`（`ai-automation`/`analytics`/`doc-processing` 会报 `InputParameterError`）。
+- **上传接口有频率限制**，连发会返回 `Too Many Requests`；脚本里按 15/30/45s 退避重试，并且默认「内容哈希没变就不重传」。
+- zip 根目录放**一个技能目录**（内部含 `SKILL.md`，可带 `references/`、`scripts/`）；单技能 zip ≤ 5MB。
+- `skill_name` 只允许小写字母/数字/连字符，且创建后和 `owner` 一样**不可改**。
+- 来源判据（本机 ADR-0006）：自研 = 在自建分组内且没有 `agents/openai.yaml` / `license:` / `compatibility:` 残留；白名单文件一旦非空即为权威名单。
+
 ## 坑（都踩过）
 
 - **列表卡片上的 ♡ 不能点**：它是展示用的，点了会跳详情页。工具用 `closest('a')` 把它排掉，只在详情页操作。
