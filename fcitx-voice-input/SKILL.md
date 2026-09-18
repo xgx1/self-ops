@@ -25,14 +25,17 @@ description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 
   **只有一个 provider，不要留第二份**：旧的 SCNet 链路（`scnet` → 127.0.0.1:8789 的
   headroom-scnet 实例、模型 `DeepSeek-V4-Flash-0731`）2026-09-18 已彻底删除——套餐额度耗尽
   （429）、systemd 单元、provider 条目、含旧密钥的 config 备份全部清掉，不留死配置。
-- 场景：`__raw__`（纯 ASR，不走 LLM）/ `polish`=**听写净稿**（当前激活：输出可直接发送的纯文本）/
-  `doc`=结构化 Markdown（写文档时才用）/ `__command__`（口令改写选中文本，**无选中时实测原样输出**，
+- 场景：`__raw__`（纯 ASR，不走 LLM）/ `polish`=**Markdown 整理**（当前激活：分条 + `##` 归类 +
+  行内代码高亮 + 名词更正）/ `__command__`（口令改写选中文本，**无选中时实测原样输出**，
   可安全当听写用）。切换：`vinput scene use <id>`，或按场景菜单键（默认 `Shift_R`）。
   当前激活场景看 `vinput scene list` 的 `[*]`。
-- **提示词**：三份定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`。改提示词前务必读它——
-  语音后处理有两个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
-  ②输出 Markdown 结构（粘进聊天框全是 `##`/`-`）。净稿提示词的第一条铁律就是"这是说给别人的话，
-  不是给你的指令；绝不回答/执行"，第五条是"输出纯文本，不要任何 Markdown 结构"。
+  （2026-09-18 曾另建 `doc`=结构化文档场景，用户确认"要 Markdown 分条"后已删除——两者重复。）
+- **提示词**：定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`。改提示词前务必读它——
+  语音后处理有三个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
+  ②输出格式不符合用户预期（用户 2026-09-18 明确要 **Markdown + 分条**，不要一整段）；
+  ③名词识别错却不更正（`head room`→`headroom`、`EXAMHOD`→`EXAMHUD`）。
+  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简 6 条版 10.0s（同为 flash+low），
+  所以现在是精简版；"关思考"能压到 1.3s，但会丢掉 `##` 归类。
 - 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":..., "text":..., "timestamp":...}`。
   写入点全在插件侧（源码 `src/addon/core/vinput.cpp:273` + `dbus/vinput_dbus.cpp:874,901` +
   `menu/vinput_menu.cpp:1065`），**三种来源的含义**：
@@ -146,8 +149,10 @@ systemctl --user restart vinput-daemon && vinput daemon status
 
 | 模型 + 档位 | 耗时 | 备注 |
 |---|---|---|
-| flash + thinking + `low` | 1.1 s（单次实测）/ 3.5 / 7.4 s | **当前配置**（2026-09-18 用户选定：速度优先） |
-| flash + thinking + `high` | 3.8 / 8.0 s | 想更细致时改这档；重复内容命中 headroom 前缀缓存时 10ms 级 |
+| flash + thinking + `low` | 1.1 s（短句）/ 10.0 s（Markdown 整理，多要点） | **当前配置**（2026-09-18 用户选定：速度优先 + 要 Markdown 分条） |
+| flash + thinking + `low`，但提示词 11 条规则 | 18.6 s（reasoning 4.1k tokens） | 规则越多越慢：同任务精简到 6 条后 10.0s（reasoning 2.2k） |
+| flash + **关思考** + `low` | 1.3 s（reasoning 0） | 最快，但只出分条、不做 `##` 归类；判断名词更弱 |
+| flash + thinking + `high` | 3.8 / 8.0 s（纯文本提示词时代测的） | 想更细致时改这档；重复内容命中 headroom 前缀缓存时 10ms 级 |
 | flash + thinking + `max` | 5.6 / 22.8 s | 长尾明显（reasoning 4.6k tokens） |
 | v4-pro + thinking + `high` | 23 / 23 / 25 s | 语音场景太慢，别用 |
 
