@@ -12,15 +12,14 @@
 
 ```
 Shift+Alt_L → fcitx5 插件 /usr/lib/fcitx5/fcitx5-vinput.so（快捷键在 ~/.config/fcitx5/conf/vinput.conf）
-  → DBus org.fcitx.Vinput → vinput-daemon（systemd 用户服务，dbus 激活、不常驻）
-  → 本地 sherpa-onnx 流式 ASR（模型在 ~/.local/share/vinput/models）→ LLM 后处理 → 回填焦点窗口
+  → DBus org.fcitx.Vinput → vinput-daemon（systemd 用户服务，dbus 激活、不常驻）→ 本地 sherpa-onnx 流式 ASR（模型在 ~/.local/share/vinput/models）→ LLM 后处理 → 回填焦点窗口
 ```
 
 配置唯一来源 `~/.config/vinput/config.json`，**一律用 CLI `vinput` 改，别手改 JSON**。当前 LLM：provider `deepseek` → `http://127.0.0.1:8787/v1`（headroom-deepseek，systemd 用户服务）→ api.deepseek.com，key 取 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`（客户端带 key，headroom 只转发）。场景：`polish`=Markdown 整理（当前激活）/ `__raw__`=纯 ASR / `__command__`=口令改写选中文本。
 
 ## A. 按快捷键完全没反应
 
-先看 `vinput daemon status`、`systemctl --user status vinput-daemon --no-pager | head -12`、`vinput daemon log | tail -20`。若日志出现 `error while loading shared libraries: libXXX.so.N` + `status=127`，那是跨仓库升级的 **SONAME 断裂**（升级本身成功），缺的常是传递依赖：
+先看 `vinput daemon status`、`systemctl --user status vinput-daemon --no-pager | head -12`、`vinput daemon log | tail -20`。若日志出现 `error while loading shared libraries: libXXX.so.N` + `status=127`，那是跨仓库升级的 **SONAME 断裂**（升级本身成功），缺的常是传递依赖；其他卡启动原因：ASR 模型缺失（`vinput model list`）、`config.json` 被写坏（有 `.bak.*` 可回滚）、麦克风设备名失效。
 
 ```bash
 ldd /usr/bin/vinput-daemon | grep 'not found'     # → libprotobuf-lite.so.36.0.0 => not found
@@ -32,8 +31,6 @@ pacman -Qo /usr/lib/libonnxruntime.so.1            # → onnxruntime-cpu（要�
 ```bash
 sudo pacman -U --noconfirm ~/下载/onnxruntime-cpu-<重建版>-x86_64.pkg.tar.zst
 ```
-
-其他卡启动原因：ASR 模型文件缺失（`vinput model list` 看已安装/活跃）、`config.json` 被写坏（有 `.bak.*` 可回滚）、麦克风设备名失效。
 
 ## B. 出字了，但没经 AI 整理
 
@@ -59,14 +56,13 @@ systemctl --user restart vinput-daemon && vinput daemon status
 虚拟声卡不通（vinput 只列真实硬件输入设备，没有 PipeWire 的 `.monitor`），用声学回路：把测试音频从扬声器放出来让麦克风拾音。
 
 ```bash
-D=~/.local/share/vinput/models/sherpa-onnx/x-asr-960ms-streaming-zipformer-transducer-zh-en-punct-int8/test_wavs; H=~/.cache/vinput/context.jsonl
-before=$(wc -l < "$H"); vinput recording start; sleep 0.7; paplay "$D/1.wav"; sleep 1.5; vinput recording stop -s polish; tail -n +$((before+1)) "$H"
+D=~/.local/share/vinput/models/sherpa-onnx/x-asr-960ms-streaming-zipformer-transducer-zh-en-punct-int8/test_wavs; H=~/.cache/vinput/context.jsonl; before=$(wc -l < "$H")
+vinput recording start; sleep 0.7; paplay "$D/1.wav"; sleep 1.5; vinput recording stop -s polish; tail -n +$((before+1)) "$H"
 ```
 
 出现 `{"source":"llm",...}` = ASR+LLM 整条通；若又看到 `asr` 条目，说明 `raw_cand`/`raw_prev` 被改回 true。房间回放的识别错字是正常现象，验证看链路不看准确率。
 
 ## 注意事项
-
 - **LLM 端点一律用本机回环**：daemon 继承 `~/.config/environment.d/99-proxy.conf` 的 `all_proxy=socks5://127.0.0.1:7897`，`no_proxy` 只放行 localhost，远端地址会走 clash 的 socks 而失败。
 - `fcitx5-vinput` / `sherpa-onnx` 来自 **archlinuxcn**，protobuf/onnxruntime 来自 **extra**——跨仓库升级最容易 SONAME 断裂。
 - 本机 `polish` / `__command__` 均为 `count=1` + 关 raw 候选/预览（`vinput scene edit <场景> --raw-cand false --raw-prev false` 后重启 daemon）→ 说完直接上屏、零手动选择；改回「想手动挑」用 `--raw-cand true`。

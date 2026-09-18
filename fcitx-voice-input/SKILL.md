@@ -31,12 +31,15 @@ description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 
   当前激活场景看 `vinput scene list` 的 `[*]`。
   （2026-09-18 曾另建 `doc`=结构化文档场景，用户确认"要 Markdown 分条"后已删除——两者重复。）
 - **提示词**：定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`（当前是 7 条规则版）。改提示词前务必读它——
-  语音后处理有四个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
+  语音后处理有五个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
   ②输出格式不符合用户预期（用户 2026-09-18 明确要 **Markdown + 分条**，不要一整段）；
   ③名词识别错却不更正（`head room`→`headroom`、`EXAMHOD`→`EXAMHUD`）；
   ④**口述顺序本来就是乱的**（先说第三点再补第一点），提示词必须要求按逻辑重排——注意别提"顺序照原文"，
-  那与需求相反（2026-09-18 踩过这个自相矛盾）。
-  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简到 6~7 条后 7~10s（同为 flash+low）；
+  那与需求相反（2026-09-18 踩过这个自相矛盾）；
+  ⑤**必须写「逐字保真」**：不总结、不概括、不提炼、不合并要点、字数不得明显少于原文。
+  精简提示词时最容易把它删掉——删了就会把用户 30 秒口述改写成它自己的几条简报，用户的原话全丢，
+  感知就是"说了一大段只回来几个字"（2026-09-18 复发过一次，规则补回为第 2 条）。
+  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简到 6~8 条后 7~10s（同为 flash+low）；
   "关思考"能压到 1.3s，但会丢掉 `##` 归类。线上提示词的可读导出：`~/.config/vinput/prompts.md`。
 - 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":..., "text":..., "timestamp":...}`。
   写入点全在插件侧（源码 `src/addon/core/vinput.cpp:273` + `dbus/vinput_dbus.cpp:874,901` +
@@ -177,6 +180,32 @@ tail -n +$((before+1)) "$H"            # 新条目出现即链路通
 房间回放的识别结果会有错字（`这是第第二种叫呃与 always always` 这种），**这是正常现象，不是故障**
 ——验证看的是链路不是准确率。
 LLM 段可脱机复现：用 `jq` 把场景 prompt 里的 `{{asr}}` / `{{selected}}` 替换掉，直接 curl 8787。
+
+### E. "说一大段只回来几个字" / 结果像半截（2026-09-18 实战，最终靠重启 daemon 修好）
+
+按下面顺序排除，别一上来就改提示词：
+
+1. **先量识别量**：把 journal 里每次录音的起止配对——《开始》= `negotiated format` 那行，
+   《结束》= `streaming finish current result bytes=N`（N 是 UTF-8 字节，汉字≈N/3）。
+   **字/秒落在 2.7–5.6 属正常口述语速**；只有明显低于 ~1.5 才是识别丢内容。
+   实测样例：79 s→342 字（4.33/s）、32 s→126 字（3.93/s）、21 s→118 字（5.62/s）都正常。
+2. **打开 daemon 的 debug 日志**（打印每次的**原始识别文本**、LLM 请求体/响应、阶段流转）：
+   ```bash
+   mkdir -p ~/.config/systemd/user/vinput-daemon.service.d
+   printf '[Service]\nEnvironment=VINPUT_DEBUG=1\n' > ~/.config/systemd/user/vinput-daemon.service.d/debug.conf
+   systemctl --user daemon-reload && systemctl --user restart vinput-daemon
+   journalctl --user -u vinput-daemon --since "-2 min" --no-pager | grep vinput-debug
+   ```
+   ⚠️ **debug 会把 `Authorization: Bearer <你的key>` 和全部识别文本写进 journal**（key 来自 provider 配置）——
+   定位完**立刻删掉 drop-in 并重启**，别长期开着。
+3. **查卡死**：debug 日志里若出现 `stop rejected (phase: postprocessing)`，说明 daemon 卡在上一轮的
+   后处理阶段、**这次停录被拒绝**，随后这一轮音频/结果就是坏的（用户感知即"说了一大段只回来几个字"）。
+   **修法：直接重启 daemon**（本次就是这么好的）：
+   ```bash
+   systemctl --user restart vinput-daemon && vinput daemon status
+   ```
+4. 识别量正常、也没卡死时，再分别查两段：LLM 段（提示词是否漏了「逐字保真」，见下）与提交段
+   （历史 `llm` 条目 = 已经 `commitString` 出去的文本；走候选菜单时反而不写这条）。
 
 ## 坑位清单（实测）
 
