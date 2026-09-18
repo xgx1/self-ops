@@ -13,6 +13,7 @@ author: Sx
 
 ```bash
 modelscope login                      # 一次性登录：开有头窗口，扫码/短信后自动检测并保存
+modelscope login --phone <11位号码>    # 短信验证码登录（验证码写进 sms-code.txt 交接，不落日志）
 modelscope login --timeout 30 --then-run   # 登录完接着跑首轮（首次验收用）
 modelscope run                        # 跑一轮：默认点赞 30 + 收藏 30
 modelscope run --dry-run              # 只探测不点击（未登录也能跑，用来预演点哪些条目）
@@ -35,13 +36,37 @@ modelscope service status | run-now | uninstall
 | 点赞 / 喜欢 | `<use xlink:href="#icon-maasa-shoucangzhuangtai216x16">` | 变实心 `#icon-maasa-zhuangtai3-fill20x20` |
 | 收藏（加入合集） | `[data-autolog*="addCollection"]`，文案「＋合集」 | 弹窗里勾选合集并确认 |
 
+**状态判定一律走接口**（`Data.AlreadyStar`），DOM 图标只用于"点得到"和点击后的二次确认。
+
 前端 i18n 把点赞按钮同时标成 `Collection`→「喜欢」和 `Favourite`→「已喜欢」，所以**「收藏」和「点赞」在页面上就是这个 ♡ 加一个 ＋合集**，不要去找「点赞」两个字。
+
+### 收藏（＋合集）弹窗的真实结构
+
+点「＋合集」后弹窗里**全是 `div`/`span`，没有 `<button>`、没有 checkbox**，按语义选择器写必挂。实测形态：
+
+| 状态 | 弹窗文案 | 要做的事 |
+| --- | --- | --- |
+| 还没有任何合集 | `请选择合集 \| 您还没有合集 \| 新合集 \| 取消 \| 添加` | 点 `新合集` → 填「合集名称」→ 选 `非公开` → 点 `创建` |
+| 已有合集 | `请选择合集 \| 最近使用 \| 我的合集 \| 组织合集 \| <合集名> \| 更新 \| N \| 取消 \| 添加` | 点合集名那一行（纯文本 div，点中即选中）→ 点 `添加` |
+
+要点：
+
+- 「添加」按钮靠 class 里的 `acss-1q5keg1` 区分，未选中时多一个 `acss-15zdjft`（禁用态）；**不要**用 `.antd5-btn` 之类去抓。
+- 填「合集名称」是 React 受控组件，必须用原生 setter + `dispatchEvent(new Event('input', {bubbles:true}))`，直接赋 `value` 不生效。
+- 首次运行会自动建一个**非公开**的合集，默认名 `我的收藏`（可用 `MODELSCOPE_COLLECTION_NAME` 覆盖）。这是站点自己的空状态引导，不是我们造的私有格式。
 
 ## 坑（都踩过）
 
 - **列表卡片上的 ♡ 不能点**：它是展示用的，点了会跳详情页。工具用 `closest('a')` 把它排掉，只在详情页操作。
 - **数据集详情页未登录时不渲染交互控件**；工作室页只有收藏没有合集。所以默认来源只用 `models`（每页 30 个，6 页共 180 个候选，够了）。
 - **弹窗会挡住下一次点击**：未登录点 ♡ 会弹登录引导层，Playwright 会一直重试到超时。必须调 `dismissOverlays()`（Esc + 关按钮 + 把残留遮罩 `display:none`），并在处理合集弹窗时给弹窗打 `data-mscli-keep="1"` 保护它不被误关。
+- **登录走阿里 passport iframe**：`passport.modelscope.cn/mini_login.htm`。短信登录的字段是 `#fm-sms-login-id`、`#fm-smscode`、协议勾选 `#fm-agreement-checkbox`、发码 `a.send-btn-link`、提交 `button.sms-login`；tab 是 `.login-tabs-tab` 里文案含「短信」的那个。**点「登录/注册」会开弹窗，必须用 frame 操作，不能在主页面直接找输入框。**
+- **别信没加载完的 ♡**：详情页数据到位前，♡ 会渲染成占位（图标是未做态、文案显示「喜欢」而不是数字）。早期只看 DOM 的版本因此误判过「已点赞」并把误判写进状态库，那条模型就再也不会被点赞。**权威判据是接口**：`GET /api/v1/models/{owner}/{name}` 的 `Data.AlreadyStar`（true = 我已点赞），`Data.Stars` 是点赞数。页面 DOM 只用来点。
+- **状态库只采信「已验证」的记录**：`markDone(..., verified)`，未验证的（纯 DOM 猜的）不会让后续运行整条跳过。发现可疑数据时把 `state.json` 的 `items` 清空即可，下一轮会用接口逐条重新核对。
+- **加了接口判据后会提前返回**：接口比 DOM 快，容易在「＋合集」还没渲染时就去点。`clickCollection` 必须先 `waitForCollectionControl()` 等控件出现，别直接 querySelector。
+- **不要用固定 sleep 赌 SPA 渲染**：改成轮询等元素/接口就绪（列表页等条目、详情页等 `AlreadyStar`）。实测固定 3.5s 在连续访问二十多页后会大面积失败，看上去像「控件消失」，其实是没渲染完。
+- **节奏要慢**：条目间隔 3–7s 随机。连续快速访问会明显变慢甚至拿不到内容。
+- **收藏连续失败要熔断**：没有合集、弹窗改版时如果硬跑，会把当天所有候选条目全刷一遍（实测 21 条全废）。代码里连败 3 次就停掉收藏、只保留点赞。
 - **点击必须验证**：点完要重新读图标，只有状态真的翻转才算成功；否则把页面提示原文（如「请登录后操作」）当失败原因记下来，别默默算成功。
 - **站点走直连**：`modelscope.cn` 国内直连最稳，默认带 `--no-proxy-server`；要走代理才设 `MODELSCOPE_PROXY`。
 - **浏览器复用现成的**：用 `~/.cache/ms-playwright/chromium-*` 里已有的 chromium，`playwright-core` 传 `executablePath`，不额外下载浏览器。
