@@ -30,12 +30,14 @@ description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 
   可安全当听写用）。切换：`vinput scene use <id>`，或按场景菜单键（默认 `Shift_R`）。
   当前激活场景看 `vinput scene list` 的 `[*]`。
   （2026-09-18 曾另建 `doc`=结构化文档场景，用户确认"要 Markdown 分条"后已删除——两者重复。）
-- **提示词**：定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`。改提示词前务必读它——
-  语音后处理有三个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
+- **提示词**：定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`（当前是 7 条规则版）。改提示词前务必读它——
+  语音后处理有四个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
   ②输出格式不符合用户预期（用户 2026-09-18 明确要 **Markdown + 分条**，不要一整段）；
-  ③名词识别错却不更正（`head room`→`headroom`、`EXAMHOD`→`EXAMHUD`）。
-  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简 6 条版 10.0s（同为 flash+low），
-  所以现在是精简版；"关思考"能压到 1.3s，但会丢掉 `##` 归类。
+  ③名词识别错却不更正（`head room`→`headroom`、`EXAMHOD`→`EXAMHUD`）；
+  ④**口述顺序本来就是乱的**（先说第三点再补第一点），提示词必须要求按逻辑重排——注意别提"顺序照原文"，
+  那与需求相反（2026-09-18 踩过这个自相矛盾）。
+  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简到 6~7 条后 7~10s（同为 flash+low）；
+  "关思考"能压到 1.3s，但会丢掉 `##` 归类。线上提示词的可读导出：`~/.config/vinput/prompts.md`。
 - 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":..., "text":..., "timestamp":...}`。
   写入点全在插件侧（源码 `src/addon/core/vinput.cpp:273` + `dbus/vinput_dbus.cpp:874,901` +
   `menu/vinput_menu.cpp:1065`），**三种来源的含义**：
