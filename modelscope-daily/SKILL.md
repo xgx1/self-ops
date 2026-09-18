@@ -78,8 +78,10 @@ modelscope skill service install --at 09:30               # 每日定时发布
 
 坑：
 
+- **SKILL.md 的行尾必须是 LF**：CRLF 会让服务端 YAML 解析器读不到 frontmatter 的 `name`，报 `UploadedFileInvalid: SKILL.md YAML frontmatter must contain 'name' field`——**报错说的是缺 name，其实是行尾问题**，别去改 frontmatter。`buildZip()` 打包时会先拷到暂存目录、把 `.md`/`.yml` 归一化成 LF 再压，源文件不动。实测 7 个 CRLF 技能 = 7 个失败，归一化后全部通过。
 - `category` 的**实际取值比官方文档短**：只有 `skill-management`、`developer-tools`、`marketing-seo`、`frontend-development`、`ai-media`、`code-quality-testing`、`mobile-development`、`cloud-devops`、`other`（`ai-automation`/`analytics`/`doc-processing` 会报 `InputParameterError`）。
-- **上传接口有频率限制**，连发会返回 `Too Many Requests`；脚本里按 15/30/45s 退避重试，并且默认「内容哈希没变就不重传」。
+- **上传、创建、更新三个接口都会限流**，都要按 15/30/45s 退避重试（早期只给上传加了重试，结果 7 个技能卡在创建那步）。发布 75 个技能实测触发 40+ 次限流，整轮约 40 分钟。
+- 默认「内容哈希没变就不重传」：整轮 75 个里真正上传的只有变更过的那些（补发时 7 新建 + 68 跳过，几分钟跑完）。
 - zip 根目录放**一个技能目录**（内部含 `SKILL.md`，可带 `references/`、`scripts/`）；单技能 zip ≤ 5MB。
 - `skill_name` 只允许小写字母/数字/连字符，且创建后和 `owner` 一样**不可改**。
 - 来源判据（本机 ADR-0006）：自研 = 在自建分组内且没有 `agents/openai.yaml` / `license:` / `compatibility:` 残留；白名单文件一旦非空即为权威名单。
