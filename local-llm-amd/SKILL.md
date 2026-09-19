@@ -164,7 +164,51 @@ llm-pi-ai:
 - 改完 `settings.yaml` **不用重启 DSH**：适配器按请求解析配置。
 - 选模型走会话里的模型选择器；不要改 `agent-default-model`（本地 27B 比云端主力模型弱，只适合当离线/隐私场景的备选）。
 
-## 八、排障速查
+## 八、思考档位（可调节）
+
+Bonsai 2 的思考强度**不是自由参数**，取值由模型自带的 chat template 定死。权威判据是服务端 `/props` 里的 `chat_template`：
+
+```
+{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}
+{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
+{{- raise_exception('Unexpected reasoning effort ...') }}
+```
+
+**只认 `xhigh`（默认）/ `medium` / `low` 三档；传别的（含 `high`）模板直接抛异常 → llama-server 回 HTTP 500。**
+
+| 请求里的字段 | 实测效果 |
+|---|---|
+| `reasoning_effort: none` | ✅ 思考关闭（llama-server 自己翻译成 `enable_thinking=false`） |
+| `reasoning_effort: low` / `medium` | ✅ 生效，思考长度明显不同 |
+| `reasoning_effort: xhigh` | ✅ 等同不传（模板默认档） |
+| `reasoning_effort: high` | ❌ 500 `Unexpected reasoning effort high` |
+| `chat_template_kwargs: {enable_thinking: false}` | ✅ 思考关闭 |
+| `thinking_budget_tokens: N` | ❌ 无效（服务端不认，别照 Bonsai 文档抄） |
+| `thinking: {type: disabled}` | ❌ 无效（那是 DeepSeek 的协议，不是它的） |
+
+### 映射进 DSH
+
+`reasoningEfforts` 的**键**是菜单档位（DSH 认 off/minimal/low/medium/high/xhigh/max），**值**就是发到线上的 `reasoning_effort`；未声明的档位会变成 `null` 而被隐藏，所以菜单里只出现声明过的。
+
+```yaml
+      reasoning: medium          # 会话未选档位时的默认，务必显式给
+      models:
+        - id: bonsai2-27b
+          reasoningEfforts:
+            "off": none          # 注意引号：不加会被 YAML 1.1 解析成布尔 false
+            low: low
+            medium: medium
+            xhigh: xhigh
+```
+
+两个容易踩的点：
+
+- **`off` 的键必须加引号**。`off` 在 YAML 1.1 里是布尔假，不引号会变成键 `false`，档位静默消失。
+- **路由级 `reasoning` 一定要显式给**。pi-ai 在「会话没选档位」时会把 `thinkingLevelMap.off` 当 `reasoning_effort` 发出去；配了 `off: none` 却不给默认档，等于**默认静默关闭思考**（和模型自带 xhigh 默认相反）。
+- 无需配 `compat.supportsReasoningEffort`：它对手写路由默认就是 `true`（只有 Grok/Zai/Moonshot/Together/Cloudflare/NVIDIA/AntLing 例外）。
+- 请求到不了模型它不会报错——`reasoning_effort` 走的是「值即档位」约定，配错值表现为运行期 500，所以**改完要实测一档**。
+
+## 九、排障速查
 
 | 症状 | 先查 |
 |---|---|
@@ -172,4 +216,6 @@ llm-pi-ai:
 | 显存不够 / OOM | 降 `-c`（KV 按 18 KiB/token@q4_0 算）、去掉 `--mmproj`、加 `--no-mmproj-offload` 把视觉塔放内存 |
 | 速度只有个位数 tok/s | 确认 `-ngl 99` 真的生效（看启动日志），显存占用是否只有一两 GB（说明没卸载到 GPU） |
 | 输出是乱码 | 用错二进制（stock llama.cpp）或文件/二进制不配对 |
+| 换档位后 500 报错 | 传了模板不认的值（只有 xhigh/medium/low 合法），看 `/props` 的 chat_template |
+| 模型不思考了 | 检查是否配了 `off: none` 但没给路由级 `reasoning` 默认档 |
 | `error: invalid argument` | 参数名对不上，先在 `--help` 里确认 |
