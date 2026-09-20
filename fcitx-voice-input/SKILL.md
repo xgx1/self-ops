@@ -1,106 +1,140 @@
 ---
 name: fcitx-voice-input
-description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 后处理）的运维与排障：按快捷键没反应/不出字、出字但没经 AI 整理、改模型与思考等级、链路体检与实测验证（灌音法）。触发词：语音不能用、语音又坏了、fcitx 语音、vinput、语音输入法、语音不出字、语音没反应、AI 整理、语音识别。
+description: fcitx5 语音输入（fcitx5-vinput + sherpa-onnx 本地 ASR + LLM 后处理）的运维与排障：按快捷键没反应/不出字、出字但没经 AI 整理、说一大段只回来几个字、改模型与思考等级、无 GUI 链路实测、提示词修改。触发词：语音不能用、语音又坏了、fcitx 语音、vinput、语音输入法、语音不出字、语音没反应、AI 整理、语音识别、语音整理。
 ---
 
-# fcitx5 语音输入（vinput）运维与排障
+# fcitx5 语音输入（vinput）
 
-> **平台约定**：本机主力环境是 Linux（Arch）——命令以 bash 为先、可直接执行。
+> 平台：Linux（Arch）。命令均为 bash，可直接执行。
+> 版本基线：`fcitx5-vinput 2.3.26-1`（2026-09-20 核定）。
 
-## 架构（2026-09-18 实测核定）
+## 先判一句话：现在到底能用吗
+
+vinput **唯一的活信号是 daemon journal**——`~/.cache/vinput/context.jsonl` 在本机从未出现过，
+不要依赖它。把每次录音的起止配对，量字/秒：
+
+```bash
+journalctl --user -u vinput-daemon --no-pager | grep -E 'negotiated format|finish current' | tail -10
+```
+
+- 起点：`negotiated format: rate=16000 channels=1 fmt=259`
+- 终点：`streaming finish current result bytes=N`（紧跟 `queued final result`）
+- 汉字数 ≈ `N/3`，字/秒 = 汉字数 ÷ 起止秒差。**落在 2.7–5.6 = 正常口述语速**；明显低于 ~1.5 = 识别丢内容。
+
+2026-09-20 当日 4 次录音实测：406s→3921B（3.2/s）、13s→94B（2.4/s）、40s→433B（3.6/s）、
+36s→385B（3.6/s），全部正常。这条判据可直接用来确认「ASR 这段是不是好的」。
+
+ASR 好 ≠ LLM 后处理好。非 debug 模式下 **LLM 段成功没有任何日志**（实测当日 4 次录音 0 条 LLM 行），
+所以「出字但没整理」只能靠开 debug 或直接测 8787 端点来判，见下。
+
+## 现状（2026-09-20 核定）
 
 ```
-快捷键 Shift+Alt_L
-  → fcitx5 插件 /usr/lib/fcitx5/fcitx5-vinput.so（薄客户端，快捷键配在 ~/.config/fcitx5/conf/vinput.conf）
+Shift+Alt_L（~/.config/fcitx5/conf/vinput.conf 的 [TriggerKey]）
+  → /usr/lib/fcitx5/fcitx5-vinput.so（薄客户端）
   → DBus org.fcitx.Vinput
-  → vinput-daemon（systemd 用户服务，dbus 激活，不常驻开机）
-  → 本地 sherpa-onnx 流式 ASR（模型 x-asr-1920ms-...zh-en-punct，模型在 ~/.local/share/vinput/models）
-  → 可选 LLM 后处理（场景 scene）→ 回填到焦点窗口
+  → vinput-daemon（systemd 用户服务，dbus 激活，非 enabled 是正常的）
+  → sherpa-onnx 流式 ASR：x-asr-1920ms-streaming-zipformer-transducer-zh-en-punct
+      （~/.local/share/vinput/models/sherpa-onnx/<模型> → ~/.model/vinput/...，587.6 MB）
+  → LLM 后处理（可选，按场景）
+  → 回填焦点窗口
 ```
 
-- 配置唯一来源：`~/.config/vinput/config.json`（用官方 CLI `vinput` 改，别手改 JSON）。
-- LLM 现状：provider `deepseek` → `http://127.0.0.1:8787/v1`（本机 headroom-deepseek 代理，
-  systemd 用户服务、开机自启）→ `https://api.deepseek.com`；密钥用 `~/.dsh/.credentials.yaml`
-  里的 `DEEPSEEK_API_KEY`（**客户端带 key，headroom 只转发**，所以 provider 里必须填 key）。
-  **只有一个 provider，不要留第二份**：旧的 SCNet 链路（`scnet` → 127.0.0.1:8789 的
-  headroom-scnet 实例、模型 `DeepSeek-V4-Flash-0731`）2026-09-18 已彻底删除——套餐额度耗尽
-  （429）、systemd 单元、provider 条目、含旧密钥的 config 备份全部清掉，不留死配置。
-- 场景：`__raw__`（纯 ASR，不走 LLM）/ `polish`=**Markdown 整理**（当前激活：分条 + `##` 归类 +
-  行内代码高亮 + 名词更正）/ `__command__`（口令改写选中文本，**无选中时实测原样输出**，
-  可安全当听写用）。切换：`vinput scene use <id>`，或按场景菜单键（默认 `Shift_R`）。
-  当前激活场景看 `vinput scene list` 的 `[*]`。
-  （2026-09-18 曾另建 `doc`=结构化文档场景，用户确认"要 Markdown 分条"后已删除——两者重复。）
-- **提示词**：定稿原文 + 设计依据 + A/B 实测见 `references/prompts.md`（当前是 7 条规则版）。改提示词前务必读它——
-  语音后处理有五个反复踩过的坑：①把"要说的话"当成"对自己的指令"去执行（口述"帮我列个表"，LLM 直接回了一张表）；
-  ②输出格式不符合用户预期（用户 2026-09-18 明确要 **Markdown + 分条**，不要一整段）；
-  ③名词识别错却不更正（`head room`→`headroom`、`EXAMHOD`→`EXAMHUD`）；
-  ④**口述顺序本来就是乱的**（先说第三点再补第一点），提示词必须要求按逻辑重排——注意别提"顺序照原文"，
-  那与需求相反（2026-09-18 踩过这个自相矛盾）；
-  ⑤**必须写「逐字保真」**：不总结、不概括、不提炼、不合并要点、字数不得明显少于原文。
-  精简提示词时最容易把它删掉——删了就会把用户 30 秒口述改写成它自己的几条简报，用户的原话全丢，
-  感知就是"说了一大段只回来几个字"（2026-09-18 复发过一次，规则补回为第 2 条）。
-  另：提示词长度直接决定延迟——11 条规则版实测 18.6s，精简到 6~8 条后 7~10s（同为 flash+low）；
-  "关思考"能压到 1.3s，但会丢掉 `##` 归类。线上提示词的可读导出：`~/.config/vinput/prompts.md`。
-- 证据/历史：`~/.cache/vinput/context.jsonl`，每行 `{"source":..., "text":..., "timestamp":...}`。
-  写入点全在插件侧（源码 `src/addon/core/vinput.cpp:273` + `dbus/vinput_dbus.cpp:874,901` +
-  `menu/vinput_menu.cpp:1065`），**三种来源的含义**：
-  **`llm`** = 提交/选中时写下的 LLM 文本（成功走通 LLM 段的主要证据）；**`asr`** = 原始识别文本
-  （只有原文进了候选列表时才写，即 `raw_cand=true` 或回退分支）；**`user`** = 输入框上下文缓冲的
-  成文文本（你手打的 + 已上屏的内容，落盘时统一标 user；2026-09-18 统计 user 3458 / asr 238 / llm 30）。
-  本机已关 raw 候选/预览，所以听写一般只看到 `llm`（+ 稍后一条 `user`），不再出现 `asr`。
+- 配置唯一来源 `~/.config/vinput/config.json`，**一律用 CLI 改，别手改 JSON**（改完 `systemctl --user restart vinput-daemon`）。
+- 场景：`__raw__`（纯 ASR，不走 LLM）/ **`polish`=Markdown 整理（当前激活）** / `__command__`（口令改写选中文本）。
+  切换：`vinput scene use <id>`；当前激活看 `vinput scene list` 的 `[*]`。
+- LLM：provider `deepseek` → `http://127.0.0.1:8787/v1`（`headroom-deepseek.service`）→ api.deepseek.com，
+  模型 `deepseek-flash`，`extra_body` 合并 `reasoning_effort:low` + `thinking.type:enabled`，timeout 120s。
+- 客户端必须自己带 key（headroom 只转发）。key 与 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY` 一致，
+  但 **config.json 里是明文存储**——注意备份文件同样含明文。
+- `polish` 与 `__command__` 均 `raw_cand=false` + `raw_prev=false`，`count` 默认 1
+  → 候选恒为 1（只有 LLM 结果）→ **说完直接上屏，零手动选择**；LLM 失败时 daemon 回退原文，仍是单候选自动上屏。
+  想手动挑就 `--raw-cand true`（原文变第 1 项默认焦点）。
+- 其他本机 headroom：`8788` sensenova、`8789` stepfun。vinput 只配了 8787。
 
-## 候选与"要不要手动挑"（raw_cand / raw_prev，2026-09-18 用户明确要求后改定）
+## daemon 日志：能看什么、看不见什么
 
-语义（源码 `src/daemon/postprocess/post_processor.cpp` + `src/addon/dbus/vinput_dbus.cpp:892`
-+ man `vinput-config.5` 三处一致）：
+非 debug 模式下 journal 里只有三种 streaming 噪声（每条录音几十到几千行）加失败行：
 
-- 候选数组 = 原始识别文本 + LLM 改写结果，**保序去重**；
-- `raw_cand=true`（默认）时原始文本**永远排第 1、也是默认焦点**；
-- **去重后只剩 1 个候选 → 直接上屏，不弹菜单；>1 个 → 弹菜单让你挑**（判定就是
-  `payload.candidates.size() > 1`）。
+| 日志行 | 含义 |
+|---|---|
+| `negotiated format: rate=16000 channels=1 fmt=259` | 录音开始 |
+| `streaming current result bytes=N tokens=N` | 噪声（周期性） |
+| `streaming partial result bytes=N decode_iterations=N` | 噪声（周期性） |
+| `streaming decode loop completed iterations=N` | 噪声（周期性） |
+| `streaming finish current result bytes=N` | 本轮识别结束 |
+| `streaming queued final result` | 已交给后处理 |
+| `LLM request provider=X url=Y failed after Nms: <原因>` → `processing error: LLM request failed: <原因>` | **LLM 段失败** |
+| `LLM response from URL returned no valid candidates` | HTTP 200 但 JSON 里没有可解析候选 |
 
-本机设置（`polish` 与 `__command__` 都是）：`count=1` + `--raw-cand false --raw-prev false`
-→ 候选恒为 1（只有 LLM 结果）→ **说完直接上屏，全程零手动选择**；LLM 失败时 daemon 回退原始
-文本，也仍是单候选、自动上屏（不会丢字，只是没整理）。
-`raw_prev=false` 顺带消掉等待期的原句浮层，以及"回车提前上屏原文"这个会误提交未整理文本的口子。
+**没有 LLM 成功日志。** 所以「这次有没有经过 AI 整理」在 journal 里无法直接证实；
+只有开 debug（见下）才能看到请求与响应。
+
+## 开 debug 日志（唯一能看到 LLM 段的办法）
 
 ```bash
-vinput scene edit polish      --raw-cand false --raw-prev false
-vinput scene edit __command__ --raw-cand false --raw-prev false
-systemctl --user restart vinput-daemon
+mkdir -p ~/.config/systemd/user/vinput-daemon.service.d
+printf '[Service]\nEnvironment=VINPUT_DEBUG=1\n' > ~/.config/systemd/user/vinput-daemon.service.d/debug.conf
+systemctl --user daemon-reload && systemctl --user restart vinput-daemon
+journalctl --user -u vinput-daemon --since "-3 min" --no-pager | grep vinput-debug
 ```
 
-改回"想手动挑"就 `--raw-cand true`（原始文本会重新变成第 1 项默认焦点）。
+debug 行带 `[vinput-debug]` 前缀，包含：`LLM input`（原文）、`LLM request ... headers=[... Authorization: Bearer <key>]`、
+`LLM request body`、`LLM request ... status=200 time=NNNN.0ms`、`LLM raw response`、
+`stop rejected (phase: postprocessing)`、`phase -> idle`。
 
-## 为什么 LLM 端点必须是 127.0.0.1
+⚠️ **debug 会把 Bearer key 和全部识别原文写进 journal**——定位完立刻
+`rm -rf ~/.config/systemd/user/vinput-daemon.service.d && systemctl --user daemon-reload && systemctl --user restart vinput-daemon`。
 
-`vinput-daemon` 由 systemd user 启动，会继承 `~/.config/environment.d/99-proxy.conf` 的
-`all_proxy=socks5://127.0.0.1:7897`；`no_proxy` 只放行 localhost。远端地址会走 clash 的 socks
-（客户端未必编了 socks 支持，可能直接失败）。→ **provider base_url 一律用本机回环**（8787 这类）。
+## LLM 请求的真实形态（改提示词前必读）
 
-## 故障速查
+daemon **不是**把场景提示词原样发出去。它把提示词和识别文本拼进 user message，再追加一段 JSON 契约：
 
-### A. 按快捷键完全没反应 / 不出字
+```
+<场景 prompt 原文>
+<ASR 识别文本>
+
+## Constraints
+- Return only the JSON object described below.
+- Each candidate must contain only the final rewritten text.
+- Do not include explanations, Markdown fences, or extra keys.
+
+## Format
+Return up to 1 distinct candidate(s) in a JSON object:
+{"candidates": ["<string>"]}
+```
+
+请求体另有固定字段：`response_format:{"type":"json_object"}`、`stream:false`、`temperature:0.2`、
+加上 provider 的 `extra_body`。
+
+两条由此而来的结论：
+
+1. 提示词里「只输出 Markdown 正文，不要代码围栏」是在**和 daemon 的 JSON 契约抢方向**——
+   模型必须最终包成 `{"candidates":[...]}`，正文里的 Markdown 是被 JSON 转义后的字符串。
+2. `returned no valid candidates` 就是模型没按 JSON 契约回答（或被 JSON 校验判掉）。
+   提示词越啰嗦、越强调「只输出正文」，越容易触发这条。
+
+## 症状 A：按快捷键完全没反应 / 不出字
 
 ```bash
-vinput daemon status                                   # 守护进程状态：idle / postprocessing / 未运行
+vinput daemon status                                  # idle / postprocessing / 未运行
 systemctl --user status vinput-daemon --no-pager | head -12
-vinput daemon log | tail -20                           # 就是 journalctl --user -u vinput-daemon
+vinput daemon log | tail -20                          # 就是 journalctl --user -u vinput-daemon
 ```
 
-若日志出现 `error while loading shared libraries: libXXX.so.N` + `status=127`：这是**升级换代
-SONAME** 的老问题（不走 update-app 失败清单，升级本身是成功的）。2026-09-18 实例：
+日志出现 `error while loading shared libraries: libXXX.so.N` + `status=127` = **跨仓库升级的 SONAME 断裂**
+（升级本身是成功的，不会出现在 update-app 的失败清单里）。本机实锤：`libprotobuf-lite.so.36.0.0`
+在 9/13 与 9/18 反复挂过（journal 共 6 条）。缺的常是**传递依赖**——要找出「谁还在要旧 SONAME」：
 
 ```bash
-ldd /usr/bin/vinput-daemon | grep 'not found'          # → libprotobuf-lite.so.36.0.0 => not found
-# 缺的往往不是直接依赖，而是传递依赖：找到「谁还在要旧 SONAME」
+ldd /usr/bin/vinput-daemon | grep 'not found'
 ldd /usr/bin/vinput-daemon | awk '/=>/ {print $3}' | while read -r p; do
   [ -f "$p" ] && readelf -d "$p" 2>/dev/null | grep -q 'libprotobuf-lite.so.36.0.0' && echo "要旧 SONAME: $p"
 done                                                   # → /usr/lib/libonnxruntime.so.1
-pacman -Qo /usr/lib/libonnxruntime.so.1                # → onnxruntime-cpu 1.29.0-2（要装 1.29.0-3）
+pacman -Qo /usr/lib/libonnxruntime.so.1                # → 看哪个包拥有它、当前版本
 ```
 
-修法（**只装重建版这一个包，不要 `pacman -Sy`**，详见技能 `update-all` 的「更新后缺库体检」）：
+修法：**只装重建版这一个包，不要 `pacman -Sy`**（详见技能 `update-all` 的「更新后缺库体检」）：
 
 ```bash
 sudo pacman -U --noconfirm ~/下载/onnxruntime-cpu-<重建版>-x86_64.pkg.tar.zst
@@ -108,114 +142,157 @@ ldd /usr/bin/vinput-daemon | grep 'not found' || echo OK
 systemctl --user restart vinput-daemon && vinput daemon status
 ```
 
-其他可能卡住启动的原因：ASR 模型文件缺失（`vinput model list` 看「已安装/活跃」）、
-`~/.config/vinput/config.json` 被写坏（有 `.bak.*` 备份可回滚）、麦克风设备名失效（见坑位清单）。
+其他卡启动原因：ASR 模型缺失（`vinput model list` 看「活跃」）、`config.json` 被写坏（有 `.bak.*` 可回滚）、
+麦克风设备名失效（见「坑位」）。
 
-### B. 出字了，但没经过 AI 整理 / 命令模式没反应
+## 症状 B：出字了，但没经 AI 整理
 
-**这是最容易误判的一条**：LLM 段失败时 vinput 会**退回原始 ASR 文本照常上屏**，历史里只留
-`source:asr` 而无 `source:user`。表现为「语音能用但很蠢/错字全留着」，用户常描述成"语音不能用了"。
+LLM 段失败时 vinput **退回原始 ASR 文本照常上屏**，表现为「语音能用但错字全留着、像没整理」，
+常被误报成「语音不能用了」。
+
+按顺序判：
 
 ```bash
-ss -ltnp | grep 8787                                   # provider 端点活着没有（headroom-deepseek）
+journalctl --user -u vinput-daemon --no-pager | grep -iE 'processing error|no valid candidates|failed after' | tail -8
+ss -ltnp | grep 8787                                        # headroom-deepseek 活着没有
 KEY=$(grep -m1 'DEEPSEEK_API_KEY' ~/.dsh/.credentials.yaml | sed -E 's/^[^:]+:\s*//')
 curl -sS --noproxy '*' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-flash","thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":256,
+  -d '{"model":"deepseek-flash","thinking":{"type":"enabled"},"reasoning_effort":"low","max_tokens":256,
        "messages":[{"role":"user","content":"你好"}]}' -w '\nHTTP:%{http_code}\n' \
   http://127.0.0.1:8787/v1/chat/completions | tail -3
 ```
 
-- `HTTP:429` + `Token Plan quota has been exceeded` = **SCNet（国家超算）套餐额度用尽**。
-  旧链路 `scnet → 127.0.0.1:8789`（headroom-scnet 实例，模型 `DeepSeek-V4-Flash-0731`）就是这么死的，
-  该 systemd 服务随后被删；`~/.dsh/.credentials.yaml` 里也没有 `SCNET_API_KEY` 了。
-  该类端点的 `/v1/models` 会返回 `{"object":"list","data":[]}`（别误判成 key 无效，直接打 chat 才准）。
-- `curl` 通但 vinput 慢/卡：headroom 在 DSH 高负载时会把小请求拖很久（2026-09-18 实测
-  `deepseek-v4-pro` 出现过 **76s**、`total_ms` 里 `opt_ms` 只占 17ms，其余全在上游）。语音场景用
-  `deepseek-flash` 更稳。
-- **别用 `vinput llm test` 当判据**：它约 10s 硬编码超时，链路正常也会误报 `连接失败：Timeout was reached`。
+- `failed after 60002.8ms: Timeout was reached`：LLM 请求超时（实测值 60s，不是 CLI 的 10s）。
+- `returned no valid candidates`：HTTP 200 但没解析出候选，看「LLM 请求的真实形态」。
+- `Could not connect to server`：端点没起（历史上有过 `provider=local url=http://localhost:20128/v1` 这种错配）。
+- `HTTP:429` + quota exceeded = 套餐额度用尽。旧 `scnet` 链路（127.0.0.1:8789）就是这么死的，
+  该 provider、systemd 单元、含旧 key 的备份已全清。**注意 8789 现在被 `headroom-step` 占用了**，别再往那指。
+- curl 通但 vinput 慢：headroom 在高负载时会把小请求拖很久（实测 v4-pro 出现过 76s）。语音场景用 `deepseek-flash`。
+- **别用 `vinput llm test` 当判据**：它约 10s 硬编码超时，链路正常也会误报 `Timeout was reached`。
 
-### C. 改链路 / 模型 / 思考等级（一律用 CLI）
+## 症状 C：说一大段只回来几个字 / 结果像半截
 
-```bash
-cd ~/.config/vinput && cp -a config.json "config.json.bak.$(date +%Y%m%d-%H%M%S)"   # 先备份
-KEY=$(grep -m1 'DEEPSEEK_API_KEY' ~/.dsh/.credentials.yaml | sed -E 's/^[^:]+:\s*//')
-vinput llm add deepseek -u http://127.0.0.1:8787/v1 -k "$KEY" \
-  -e '{"thinking":{"type":"enabled"},"reasoning_effort":"low"}'       # -e = 合并进每次请求体；low = 当前档位
-vinput llm rm <旧provider>                                            # 旧的清掉，别留死配置
-vinput scene edit polish     -p deepseek -m deepseek-flash --timeout 120000
-vinput scene edit __command__ -p deepseek -m deepseek-flash --timeout 120000
-vinput scene use polish          # 切激活场景：polish=听写+AI整理；__command__=口令改选中文本
-systemctl --user restart vinput-daemon && vinput daemon status
-```
+按这个顺序排除，**别一上来就改提示词**：
 
-**思考等级**：DeepSeek 官方是 `reasoning_effort: low|high|max`，配 `thinking.type=enabled|disabled`
-（`disabling` 就是"最低思考等级"，2026-09-18 修的那次旧配置正是 `disabled`）。
-实测（polish 提示词、经 headroom、同一台机）：
-
-| 模型 + 档位 | 耗时 | 备注 |
-|---|---|---|
-| flash + thinking + `low` | 1.1 s（短句）/ 10.0 s（Markdown 整理，多要点） | **当前配置**（2026-09-18 用户选定：速度优先 + 要 Markdown 分条） |
-| flash + thinking + `low`，但提示词 11 条规则 | 18.6 s（reasoning 4.1k tokens） | 规则越多越慢：同任务精简到 6 条后 10.0s（reasoning 2.2k） |
-| flash + **关思考** + `low` | 1.3 s（reasoning 0） | 最快，但只出分条、不做 `##` 归类；判断名词更弱 |
-| flash + thinking + `high` | 3.8 / 8.0 s（纯文本提示词时代测的） | 想更细致时改这档；重复内容命中 headroom 前缀缓存时 10ms 级 |
-| flash + thinking + `max` | 5.6 / 22.8 s | 长尾明显（reasoning 4.6k tokens） |
-| v4-pro + thinking + `high` | 23 / 23 / 25 s | 语音场景太慢，别用 |
-
-### D. 实测验证（不靠人耳，2026-09-18 跑通）
-
-vinput **只列真实硬件输入设备**（`vinput device list` 里没有 PipeWire 的 `.monitor`），
-所以虚拟声卡那条路不通；可行的是**声学回路**：把中文测试音频从扬声器放出来让麦克风拾音。
-
-```bash
-D=~/.local/share/vinput/models/sherpa-onnx/x-asr-960ms-streaming-zipformer-transducer-zh-en-punct-int8/test_wavs
-H=~/.cache/vinput/context.jsonl
-before=$(wc -l < "$H")
-vinput recording start; sleep 0.7; paplay "$D/1.wav"; sleep 1.5; vinput recording stop -s polish
-tail -n +$((before+1)) "$H"            # 新条目出现即链路通
-```
-
-判定：出现 `{"source":"llm",...}` = ASR + LLM 整条通（本机已关 raw 候选/预览，所以不再出现 `asr`；
-若哪天又看到 `asr` 条目，说明 `raw_cand`/`raw_prev` 被改回 true 了）；出现 `{"source":"user",...}`
-= 已提交（需要有焦点窗口时才写）；daemon 日志 `streaming queued final result` = 流水线跑完。
-房间回放的识别结果会有错字（`这是第第二种叫呃与 always always` 这种），**这是正常现象，不是故障**
-——验证看的是链路不是准确率。
-LLM 段可脱机复现：用 `jq` 把场景 prompt 里的 `{{asr}}` / `{{selected}}` 替换掉，直接 curl 8787。
-
-### E. "说一大段只回来几个字" / 结果像半截（2026-09-18 实战，最终靠重启 daemon 修好）
-
-按下面顺序排除，别一上来就改提示词：
-
-1. **先量识别量**：把 journal 里每次录音的起止配对——《开始》= `negotiated format` 那行，
-   《结束》= `streaming finish current result bytes=N`（N 是 UTF-8 字节，汉字≈N/3）。
-   **字/秒落在 2.7–5.6 属正常口述语速**；只有明显低于 ~1.5 才是识别丢内容。
-   实测样例：79 s→342 字（4.33/s）、32 s→126 字（3.93/s）、21 s→118 字（5.62/s）都正常。
-2. **打开 daemon 的 debug 日志**（打印每次的**原始识别文本**、LLM 请求体/响应、阶段流转）：
-   ```bash
-   mkdir -p ~/.config/systemd/user/vinput-daemon.service.d
-   printf '[Service]\nEnvironment=VINPUT_DEBUG=1\n' > ~/.config/systemd/user/vinput-daemon.service.d/debug.conf
-   systemctl --user daemon-reload && systemctl --user restart vinput-daemon
-   journalctl --user -u vinput-daemon --since "-2 min" --no-pager | grep vinput-debug
-   ```
-   ⚠️ **debug 会把 `Authorization: Bearer <你的key>` 和全部识别文本写进 journal**（key 来自 provider 配置）——
-   定位完**立刻删掉 drop-in 并重启**，别长期开着。
-3. **查卡死**：debug 日志里若出现 `stop rejected (phase: postprocessing)`，说明 daemon 卡在上一轮的
-   后处理阶段、**这次停录被拒绝**，随后这一轮音频/结果就是坏的（用户感知即"说了一大段只回来几个字"）。
-   **修法：直接重启 daemon**（本次就是这么好的）：
+1. **先量识别量**（「先判一句话」那节）。字/秒 ≥2.7 就证明 ASR 没丢内容，问题在后两段。
+2. **开 debug 查卡死**：若出现 `stop rejected (phase: postprocessing)`，说明 daemon 卡在上一轮后处理、
+   **这次停录被拒**，这一轮结果就是坏的。**修法：直接重启 daemon**：
    ```bash
    systemctl --user restart vinput-daemon && vinput daemon status
    ```
-4. 识别量正常、也没卡死时，再分别查两段：LLM 段（提示词是否漏了「逐字保真」，见下）与提交段
-   （历史 `llm` 条目 = 已经 `commitString` 出去的文本；走候选菜单时反而不写这条）。
+   2026-09-18 的一次就是靠这个修好的（当时卡在 postprocessing、13:45:39 出现 stop rejected）。
+3. **看提示词有没有「逐字保真」**：漏了它，30 秒口述会被压成模型自己的几条摘要（原文全丢）。
+   精简提示词时最容易删的就是这条，见 `references/prompts.md` 的失败模式 5。
+4. **看 JSON 契约**：`returned no valid candidates` = 模型没按 `{"candidates":[...]}` 回答，
+   此时上屏的是回退原文——看起来「像半截」但不是半截。
 
-## 坑位清单（实测）
+## 改配置（一律用 CLI）
 
-- `vinput device list` **不含 monitor**；`vinput config set /global/capture_device` 填了它不认的名字
-  会**静默回落到默认设备**（表现为"抓到的全是静音"）。设备名抄 `vinput device list` 里的原文。
-- `vinput --help` 有 `recording start/stop`，可无 GUI 驱动整条链路（`stop -s <场景>` 可临时指定场景）。
-- 历史文件的 `source` 是判断"LLM 段是否生效"的最快证据：`llm`=LLM 结果、`asr`=原文进过候选/预览、
-  `user`=最终提交（详见上面「候选与要不要手动挑」节）。
-- vinput 包来自 **archlinuxcn**（`fcitx5-vinput`、`sherpa-onnx`），protobuf/onnxruntime 来自
-  **extra**；跨仓库升级最容易出 SONAME 断裂。
-- 有 `.bak` 备份习惯：`~/.config/vinput/config.json.bak.<时间戳>`；出问题先回滚再定位。
-- daemon 常驻不必要（1.4G 内存峰值是 ASR 模型）——dbus 激活即用即起，`systemctl --user is-enabled`
-  显示 `disabled` 是正常的。
+```bash
+cd ~/.config/vinput && cp -a config.json "config.json.bak.$(date +%Y%m%d-%H%M%S)"   # 先备份（含明文 key）
+KEY=$(grep -m1 'DEEPSEEK_API_KEY' ~/.dsh/.credentials.yaml | sed -E 's/^[^:]+:\s*//')
+
+# 换链路 / provider
+vinput llm rm <旧provider>                                              # 先清掉，别留死配置
+vinput llm add deepseek -u http://127.0.0.1:8787/v1 -k "$KEY" \
+  -e '{"thinking":{"type":"enabled"},"reasoning_effort":"low"}'         # -e 合并进每次请求体
+
+# 场景指向新 provider / 模型
+vinput scene edit polish      -p deepseek -m deepseek-flash --timeout 120000
+vinput scene edit __command__ -p deepseek -m deepseek-flash --timeout 120000
+vinput scene use polish
+
+# 改提示词（-t 接正文，{{asr}} / {{selected}} 占位符必须保留）
+vinput scene edit polish -t "$(cat polish.txt)"
+
+systemctl --user restart vinput-daemon && vinput daemon status
+```
+
+`vinput scene edit <id>` 全部选项：`-l` 标签 / `-t` 提示词 / `-p` provider / `-m` 模型 / `-c` 候选数
+（0 = 不走 LLM）/ `--timeout` / `--context-lines`（发给 LLM 的前文行数）/ `--raw-cand` / `--raw-prev`。
+其他入口：`vinput config get|set <JSON Pointer>`、`vinput scene list|use`、`vinput model list`、
+`vinput device list`、`vinput llm list|add|rm`。
+
+### 为什么 base_url 一律用本机回环
+
+daemon 由 systemd user 启动，继承 `~/.config/environment.d/99-proxy.conf` 的
+`all_proxy=socks5://127.0.0.1:7897`，`no_proxy` 只放行 localhost。远端地址会走 clash 的 socks，
+而 vinput 的 HTTP 客户端未必编了 socks 支持。→ provider 一律指 `127.0.0.1:<端口>`。
+
+## 延迟实测（2026-09-20 修正）
+
+旧表的短数据无法复核（journal 只保留了 debug 时期的两条硬记录），以硬记录为准：
+
+| 提示词 / 输入 | 耗时 | 来源 |
+|---|---|---|
+| 7 条规则 + 13 字输入 | **4.82 s** | journal `time=4819.0ms`（9/18） |
+| 8 条规则（含逐字保真）+ ~150 字 | **28.68 s** | journal `time=28680.6ms`（9/18），`reasoning_effort:low` + `thinking:enabled` |
+| 旧 scnet 链路 | 60.0 s 超时 | journal `failed after 60002.8ms`（9/8） |
+| v4-pro 任意输入 | 23–25 s | 9/18 记录，**无 journal 可复核**，勿作决策依据 |
+
+结论：**延迟主要由输入长度和提示词长度决定，不是档位**。短输入 5s 级，长口述 20–30s 是常态，
+`low` 也压不住。想提速优先缩短口述或精简提示词，其次才考虑关思考。
+
+## 无 GUI 实测（灌音法）
+
+vinput 只列真实硬件输入设备（`vinput device list` 没有 PipeWire 的 `.monitor`），
+虚拟声卡那条路不通；可行的是**声学回路**：把测试音频从扬声器放出来让麦克风拾音。
+
+```bash
+# 先找一份 wav——模型目录里已无 test_wavs（960ms 模型 2026-09-20 已删），自备音频
+WAV=~/下载/测试音频.wav
+vinput recording start; sleep 0.7; paplay "$WAV"; sleep 1.5; vinput recording stop -s polish
+journalctl --user -u vinput-daemon --since "-1 min" --no-pager | grep -E 'negotiated|finish current'
+```
+
+出现 `negotiated format` + `finish current result bytes=N` = ASR 链路通。
+房间回放的识别结果会有错字（正常现象），验证看链路不看准确率。
+要验证 LLM 段必须开 debug，或直接把替换好占位符的提示词 curl 8787。
+
+## 提示词
+
+定稿原文 + 恢复方式 + 五个失败模式的设计依据：`references/prompts.md`。**改提示词前必读**。
+
+反复踩的坑（精简时最容易全踩）：
+
+1. 把「要说的话」当「对自己的指令」执行——口述"帮我列个表"，LLM 直接回一张表。
+2. 输出形态不符预期——用户要的是 **Markdown 分条**，不是纯文本净稿。
+3. 名词识别错却不更正（`head room`→`headroom`）；但要加护栏「判断不出就保留，不许编造」。
+4. 口述顺序本来就是乱的（先说第三点再补第一点）——必须要求按逻辑重排。
+   注意别提"顺序照原文"，那与需求相反。
+5. **漏了「逐字保真」= 口述被改写成简报**（2026-09-18 复发过），是「说一大段只回几个字」的头号嫌疑。
+
+## 坑位
+
+- `vinput device list` 不含 monitor；`vinput config set /global/capture_device` 填了它不认的名字会
+  **静默回落到默认设备**（表现为「抓到的全是静音」）。设备名抄 `vinput device list` 里的原文。
+- `vinput recording` 有 `start` / `stop` / `toggle`，`stop -s <场景>` 可临时指定场景，可无 GUI 驱动整条链路。
+- `fcitx5-vinput` / `sherpa-onnx` 来自 **archlinuxcn**，protobuf / onnxruntime 来自 **extra**——
+  跨仓库升级最容易出 SONAME 断裂。
+- daemon `is-enabled` 显示 `disabled` 属正常（dbus 激活，内存峰值常态 ~900M、短时冲 1.4G，不值得常驻）。
+- 备份习惯：`~/.config/vinput/config.json.bak.<时间戳>`；**备份含明文 key，不要外传**。
+- 配置里没有 history/context 写入开关——`context.jsonl` 不要指望。
+- `MenuKey`（默认 `Shift_R`）与 `CommandKeys` 在 `~/.config/fcitx5/conf/vinput.conf` 里目前是注释状态，
+  生效的是内置默认值，不是显式配置。
+
+## 不确定 / 待确认
+
+以下事项本机证据不足以定论，别当作既定事实写进流程：
+
+1. **`context.jsonl` 的来历不明。** 全盘无此文件、配置里也没有 history 开关，但旧版本文档曾引用它的
+   统计（user 3458 / asr 238 / llm 30）并给出上游源码写入点。无法确认是上游默认不写、还是曾被清过。
+   → 已按「不存在」处理，全文不再依赖它。
+2. **今天 4 次录音全部 ASR 正常，却 0 条 LLM 日志。** 非 debug 模式没有 LLM 成功日志，
+   无法区分「LLM 段静默成功」和「LLM 段被跳过」。用户实际使用体验无法从现有证据判定。
+3. **旧延迟表里的数字无据可查。** 1.1s 短句 / 10.0s Markdown 整理 / 关思考 1.3s / high 3.8-8.0s /
+   max 5.6-22.8s 均无 journal 佐证，只有 4.82s 与 28.68s 两条是硬记录。旧表已删除，未再回填。
+4. **`thinking.type` 的合法取值。** DeepSeek 官方是 `enabled` / `disabled`，旧文档写「`disabling` 就是
+   最低思考等级」，不确定是否存在第三个值，也未实测 `disabled` 在本链路上的实际行为。
+5. **`--context-lines` 的效果未实测。** 选项存在，但它如何与提示词交互、是否值得开，没有数据。
+6. **上游源码行号引用未核对。** 旧文档引用 `src/addon/core/vinput.cpp:273`、`dbus/vinput_dbus.cpp:874,901,892`、
+   `menu/vinput_menu.cpp:1065`、`src/daemon/postprocess/post_processor.cpp`——本机无源码树，行号与语义均未验证。
+   已不写入正文。
+7. **8787 是否仍是最优端点。** 本机现有 `8788` sensenova（本会话即 sensenova 模型）与 `8789` stepfun，
+   未对比过它们在语音场景的延迟与整理质量。
+8. **声学回路的回声问题未验证。** `duck_output_while_recording` 当前为 `false`，录音时扬声器不衰减，
+   扬声器播出的音频是否被麦克风拾回并进 ASR，没有实测证据。灌音法测出的错字里可能含这部分。
