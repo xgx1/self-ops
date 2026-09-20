@@ -11,7 +11,12 @@ DSH 技能分组仓：**self-ops**
 - `aliyunpan-cli-setup-login`
 - `baidupcs-batch-pipeline`
 - `baidupcs-cli`
+- `fcitx-voice-input`
+- `git-pull-commit-push`
+- `headroom-provider-onboard`
 - `local-git-archive-server`
+- `local-llm-amd`
+- `modelscope-daily`
 - `scanned-doc-ocr-extraction`
 - `strip-cpp-comments`
 - `video-transcribe-cn-env`
