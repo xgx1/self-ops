@@ -212,17 +212,27 @@ reasoning="high"     reasoning_effort="high"     maxTokens=max_tokens roles=["sy
 | `OPENAI_TARGET_API_URL` | `https://api.stepfun.com/step_plan` |
 | headroom 端口 | `:8789`（单元 `headroom-step.service`） |
 | DSH route key | `step` |
-| 密钥 | `STEP_API_KEY`（Step Plan 控制台「接口密钥」） |
-| 模型 | `step-3.7-flash`（198B 稀疏 MoE / 11B 激活，256K 上下文，原生图视频理解） |
+| 密钥 | `STEP_API_KEY`（Step Plan 控制台「接口密钥」，64 位无前缀） |
+| 模型 | `step-5-preview`（新一代旗舰基模，**1M tokens 上下文**，最大输出 1M，文本/图片/视频输入） |
 | 推理强度 | **仅 `low / medium / high`**；OpenAI 协议字段 `reasoning_effort`，Anthropic 协议 `output_config.effort` |
 | 服务端默认档 | `medium`（不传字段时） |
 | 思考内容 | 响应的 `reasoning` 字段；要 DeepSeek 风格就传 `reasoning_format="deepseek-style"` → `reasoning_content` |
-| `max_tokens` 字段 | **必须** `max_tokens`（不是 `max_completion_tokens`） |
+| `max_tokens` 字段 | **必须** `max_tokens`（不是 `max_completion_tokens`）；该模型默认 `INF` 不限制 |
 | 无 | 不支持 `off`/`none`、不支持 `xhigh`/`max` |
 
-文档来源：<https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api>、<https://platform.stepfun.com/docs/zh/guides/models/step-3.7-flash>、<https://github.com/stepfun-ai/Step-3.7-Flash>
+### `max_tokens` 上界怎么定
 
-`step-router-v1` 是按请求特征在 `deepseek-v4-pro` 与 `step-3.7-flash` 之间切换的智能路由——不透明，不挂。`step-3.5-flash` / `step-3.5-flash-2603` 是旧代，纯文本，不挂。
+`step-5-preview` 文档写明 `max_tokens` 默认 `INF`、由模型自决。但 DSH 的 `llm-pi-ai` 会把模型条目的 `maxTokens` 当请求上界发出去（`buildBaseOptions` → `options.maxTokens ?? model.maxTokens`），而该字段 schema 要求 `min(1)`，**无法省略**。所以必须给一个数：给太小会截断长回复，给 1M 等于没上界、失控输出会吃掉套餐 Credit。本机取 `131072`（128K）——单条 agent 回复用不到，纯做兜底。
+
+顺带一个限制：模型支持视频输入，但 DSH 的 modality gate 只有 `text` / `image`（`packages/llm/llm-pi-ai/src/catalog.ts` 的 `MODALITY_GATE`），视频在 DSH 里走不通，`input` 只能写 `[ text, image ]`。
+
+文档来源：<https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api>、<https://platform.stepfun.com/docs/zh/guides/models/step-5-preview>、<https://platform.stepfun.com/docs/zh/guides/models/step-3.7-flash>
+
+### 不挂的型号
+
+- `step-router-v1`：按请求特征在 `deepseek-v4-pro` 与 flash 系列之间切换的智能路由，行为不透明，不挂。
+- `step-3.7-flash`（198B 稀疏 MoE / 11B 激活，256K 上下文）：旧代，2026-09-20 已被 `step-5-preview` 取代。保留记录以便回滚。
+- `step-3.5-flash` / `step-3.5-flash-2603`：更旧的纯文本代际，不挂。
 
 ## 七、排障速查
 
