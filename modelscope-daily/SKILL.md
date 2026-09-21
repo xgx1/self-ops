@@ -15,7 +15,7 @@ author: Sx
 modelscope login                      # 一次性登录：开有头窗口，扫码/短信后自动检测并保存
 modelscope login --phone <11位号码>    # 短信验证码登录（验证码写进 sms-code.txt 交接，不落日志）
 modelscope login --timeout 30 --then-run   # 登录完接着跑首轮（首次验收用）
-modelscope run                        # 跑一轮：默认点赞 30 + 收藏 30
+modelscope run                        # 跑一轮：默认点赞 100 + 收藏 100（不重复）
 modelscope run --dry-run              # 只探测不点击（未登录也能跑，用来预演点哪些条目）
 modelscope run --headed               # 开窗口跑，肉眼看着它点
 modelscope scan <url> --dump          # 诊断：列页面交互控件 + 导出 HTML
@@ -24,7 +24,15 @@ modelscope service install --at 08:30 # 装/更新每日定时任务
 modelscope service status | run-now | uninstall
 ```
 
-参数：`--count N`（点赞目标）、`--collection-count N`（收藏目标）、`--no-collection`、`--sources models[,datasets,studios]`、`--max-pages N`。
+参数：`--count N`（点赞目标，默认 100）、`--collection-count N`（收藏目标，默认 100）、`--no-collection`、`--sources models[,datasets,studios]`、`--max-pages N`（单轮最多翻几页，默认 30）。
+
+### 「绝不重复」是三重保证
+
+1. **游标只向前**：`state.json` 的 `cursor.models` 单调递增（到 3000 页才回绕），每天接上次的位置往更深的目录走——同一页不会被反复啃。早期版本游标在 1–6 页里循环，几天就把那 180 条挖空、后来只能点到 3 个赞。
+2. **整条已做完的直接跳过**：两类动作都做过且**已验证**的条目连详情页都不开（实测一轮跳 88 条、零页面打开）。
+3. **每个动作前查权威状态**：点赞以接口 `Data.AlreadyStar` 为准（**♡ 是切换按钮，点错会把已点赞取消掉**）；收藏以状态库里已验证的记录为准。运行内还用一个 Set 保证同一条目只处理一次。
+
+核验重复的干净办法：对比状态库里 `collection` 计数与收藏夹实际条目数——`GET /api/v1/collections/list` 返回的 `ElementCount` 应当等于状态库计数（2026-09-21 实测 123 = 123，零重复）。
 环境：`MODELSCOPE_CHROME`（chromium 可执行文件）、`MODELSCOPE_PROXY`（需要代理时）、`MODELSCOPE_BASE`。
 
 ## 交互语义（前端产物实测，别凭字面猜）
